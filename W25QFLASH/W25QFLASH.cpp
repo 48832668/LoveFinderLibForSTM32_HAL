@@ -39,8 +39,9 @@ constexpr uint8_t CMD_PAGE_PROGRAM_4B  = 0x12;   // 32 位地址页编程
 // 擦除 (按地址宽度自动选择)
 constexpr uint8_t CMD_SECTOR_ERASE_3B = 0x20;    // 4KB 扇区擦除
 constexpr uint8_t CMD_SECTOR_ERASE_4B = 0x21;    // 4KB 扇区擦除 (4 字节地址)
-constexpr uint8_t CMD_BLOCK_ERASE_32K_3B = 0x52; // 32KB 块擦除
-constexpr uint8_t CMD_BLOCK_ERASE_32K_4B = 0x5C; // 32KB 块擦除 (4 字节地址)
+constexpr uint8_t CMD_BLOCK_ERASE_32K_3B = 0x52; // 32KB 块擦除 (仅 3 字节地址)
+// 注意: W25Q256JV 指令集没有 32KB 块擦除的专用 4 字节地址命令 (0x5C 无效!)
+//       4B 器件上 eraseBlock32K() 内部回退为 8 次 4KB 扇区擦除 (21h)
 constexpr uint8_t CMD_BLOCK_ERASE_64K_3B = 0xD8; // 64KB 块擦除
 constexpr uint8_t CMD_BLOCK_ERASE_64K_4B = 0xDC; // 64KB 块擦除 (4 字节地址)
 constexpr uint8_t CMD_CHIP_ERASE        = 0xC7;  // 全片擦除
@@ -449,10 +450,24 @@ bool W25QFLASH::eraseBlock32K(uint32_t addr)
         return false;
     }
 
+    // W25Q256JV 无 32KB 块擦除的 4 字节地址专用命令 (0x5C 无效)。
+    // 4B 器件回退为 8 次 4KB 扇区擦除 (21h), 语义等价且经过实机验证。
+    if (m_addr4Bytes)
+    {
+        for (uint32_t off = 0; off < BLOCK32K_SIZE; off += SECTOR_SIZE)
+        {
+            if (!eraseSector(addr + off))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     writeEnable();
 
     select();
-    transfer(m_addr4Bytes ? CMD_BLOCK_ERASE_32K_4B : CMD_BLOCK_ERASE_32K_3B);
+    transfer(CMD_BLOCK_ERASE_32K_3B);
     sendAddress(addr);
     deselect();
 
