@@ -1,133 +1,177 @@
-# LoveFinderLib for STM32 HAL
+# ST7735 LCD Display Library for STM32 (最终版)
 
-> **轻量级 STM32 外设驱动库（C++17）** · 基于 ST 标准 HAL 库
-> Lightweight STM32 peripheral driver library (C++17) built on the ST Standard HAL.
+高性能、可移植的 ST7735 液晶屏驱动库（C++17 / HAL 库），支持**字符级编译**、**空心/实心图形**、SPI 轮询 + DMA 双通道传输。
 
-一套面向 **STM32 + ST 标准 HAL** 的模块化外设驱动集合，纯 C++17 编写，风格统一、移植简单、CPU 占用极低。命名空间 `LoveFinderLib`。
+## 特性
 
-A modular collection of STM32 peripheral drivers, written in modern C++17 with a unified style, easy porting and minimal CPU overhead. Namespace: `LoveFinderLib`.
+- **字符级编译**: 只编译需要的字符（如中文字库仅编译"你好"两个字模做上电欢迎语），显著减小 Flash 占用，适合小容量 MCU
+- **双模式字库**:
+  - 模式 A (传统): `font.data != nullptr` — 整套字库, 固定索引 `(ch-32)*height`
+  - 模式 B (字符级): `font.data == nullptr` — 查表 `font_get_glyph`/`font_get_glyph_unicode`, 未编译字符自动跳过
+- **完整图形 API**: 空心+实心 — 点/线/圆/椭圆/矩形/圆角矩形/三角形/多边形
+- **SPI 传输双通道**: 默认阻塞轮询 (`HAL_SPI_Transmit`), 高性能路径提供 `_DMA` 后缀函数 (`HAL_SPI_Transmit_DMA` + 完成回调)
+- **UTF-8 中文支持**: `ST7735_WriteStringUTF8` 可直接输出中文字符串
+- **轻量**: 无动态内存分配, 最小化 RAM 占用
 
----
-
-## 模块 Modules
-
-| 模块 | 说明 | 关键特性 |
-|------|------|----------|
-| [**BUTTON**](BUTTON/README.md) | EXTI 驱动稳定按键库 | 单击 / 双击 / 长按，长按充能条，事件标志位，运行期可调阈值 |
-| [**ENCODER**](ENCODER/README.md) | 旋转编码器驱动库（TIM 硬件编码器模式） | 有符号增量累加（无中断无竞态）、方向/活动/范围 API、事件标志位、型号预设 |
-| [**INA226**](INA226/README.md) | 电流/电压/功率监测（I2C） | 校准、连续/触发转换、告警系统、ALERT 引脚绑定、型号预设 |
-| [**W25QFLASH**](W25QFLASH/README.md) | W25Q 系列 SPI Flash（W25Q16~W25Q512） | JEDEC ID 自动识别型号、自动地址宽度、读/写/擦除、掉电唤醒 |
-
-更多模块持续添加中。More modules coming.
-
----
-
-## 快速开始 Quick Start
-
-### 1. 硬件要求 Hardware requirements
-
-- 任意 STM32 MCU + ST 标准 HAL 库（STM32Cube HAL）
-- 每个模块的硬件要求见对应 `README.md`
-
-### 2. 接入工程 Add to your project
-
-以 **Keil MDK / STM32CubeIDE** 为例：
-
-1. 拷贝需要的模块目录（如 `ENCODER/`）到你的工程，例如 `Drivers/LoveFinderLib/ENCODER/`
-2. 把 `ENCODER.cpp`（及 `ENCODER.hpp` 所在目录）加入编译 / include 路径
-3. 按模块 `README.md` 用 CubeMX 配置对应外设（TIM 编码器模式 / EXTI 中断等）
-4. 在代码中包含头文件并使用
-
-```cpp
-#include "ENCODER.hpp"
-using namespace LoveFinderLib;
-
-extern TIM_HandleTypeDef htim3;   // CubeMX 已配置为编码器模式
-Encoder enc;
-
-void app_init(void)
-{
-    ENCODER_Config cfg = ENCODER_Config::getDefault();
-    cfg.type     = e_ENCODER_Type::EC11;   // 按实际型号
-    cfg.minValue = -128;
-    cfg.maxValue = 128;
-    enc.init(&htim3, cfg);
-    enc.start();
-}
-
-void app_loop(void)
-{
-    if (enc.changed())
-    {
-        int32_t c = enc.getCount();
-        update_display(c);        // 驱动你的 UI
-    }
-}
-```
-
-### 3. 移植到其他 STM32 系列 Port to other STM32 families
-
-每个模块**只需修改头文件顶部一行 include**：
-
-```cpp
-#include "stm32f4xx_hal.h"   // <<<< 改成你所用器件的 HAL 头文件
-```
-
-支持系列 Supported families:
-
-| 系列 | 头文件 |
-|------|--------|
-| F0 / F1 / F3 / F4 / F7 | `stm32f0xx_hal.h` / `stm32f1xx_hal.h` / `stm32f3xx_hal.h` / `stm32f4xx_hal.h` / `stm32f7xx_hal.h` |
-| L0 / L1 / L4 / L5 | `stm32l0xx_hal.h` / `stm32l1xx_hal.h` / `stm32l4xx_hal.h` / `stm32l5xx_hal.h` |
-| G0 / G4 | `stm32g0xx_hal.h` / `stm32g4xx_hal.h` |
-| H5 / H7 | `stm32h5xx_hal.h` / `stm32h7xx_hal.h` |
-| WB / WL | `stm32wbxx_hal.h` / `stm32wlxx_hal.h` |
-| C0 / U0 / U5 | `stm32c0xx_hal.h` / `stm32u0xx_hal.h` / `stm32u5xx_hal.h` |
-
----
-
-## 设计理念 Design Principles
-
-- **纯 C++17，无 C API 残留**：全库统一 C++ 接口、`LoveFinderLib` 命名空间、`init(handle, config)` 风格
-- **统一配置结构体**：每个模块用 `XXX_Config` + `getDefault()` 工厂，编译期宏设默认值，运行期可动态修改
-- **事件驱动 + 标志位**：`changed()` / `update()` + 事件标志位（`peekFlags` / `getAndClearFlags` / `testFlag`），配合 UI 定时器做事件驱动刷新，**不忙等、不逐脉冲轮询**
-- **CPU 占用极低**：硬件外设承担核心工作（TIM 硬件编码器计数 / EXTI 中断置位），主循环开销仅几十个周期
-- **多实例支持**：无共享静态状态，同一模块可在单板创建多个实例（多编码器 / 多按键）
-- **中断安全**：标志位 `volatile` 设计，可在用户自定义中断中安全读取 / 置位
-- **移植成本 ≈ 0**：只依赖通用 HAL API，跨系列只需改一行 include
-
----
-
-## 目录结构 Repository Layout
+## 目录结构
 
 ```
 LoveFinderLibForSTM32_HAL/
-├── README.md          // 本文档
-├── BUTTON/
-│   ├── BUTTON.hpp     // 头文件：宏、枚举、结构体、Button 类
-│   ├── BUTTON.cpp     // 实现：EXTI 配置、状态机、消抖/事件逻辑
-│   └── README.md      // BUTTON 使用文档
-└── ENCODER/
-    ├── ENCODER.hpp    // 头文件：宏、枚举、结构体、Encoder 类
-    ├── ENCODER.cpp    // 实现：初始化、计数换算、启停
-    └── README.md      // ENCODER 使用文档
+├── ST7735/                    # ST7735 屏幕驱动核心 (9 文件)
+│   ├── st7735.hpp            # 驱动头文件 (常量/宏/API 声明)
+│   ├── st7735.cpp            # 驱动实现 (初始化/字符/图形/SPI)
+│   ├── fonts_config.hpp      # 字体配置与字符集定义
+│   ├── fonts.h / fonts.c     # 完整字库: Font_7x10 / Font_11x18 / Font_16x26
+│   ├── fonts_subset.h/cpp    # 字符级编译子集字库 (ASCII 子集 + 中文子集)
+│   └── icons.h / icons.c     # 图标库 (Icons_*, IconIndex)
+├── BUTTON/ ENCODER/ INA226/ W25QFLASH/   # 其他外设库 (同风格)
+├── README.md                 # 本文档
+├── PROJECT_SUMMARY.md        # 项目交付总结
+└── LICENSE                   # MIT 许可证
 ```
 
----
+## 硬件绑定 (编译期宏, 非运行时参数)
 
-## 每个模块的详细文档
+库通过 `st7735.hpp` 中的宏直接绑定 HAL 句柄与引脚, **无需运行时配置函数**:
 
-- [BUTTON — EXTI 驱动稳定按键库](BUTTON/README.md)
-- [ENCODER — 旋转编码器驱动库](ENCODER/README.md)
+```cpp
+// SPI 句柄 (CubeMX 生成的全局变量名)
+#define ST7735_SPI_PORT      hspi1
 
----
+// 引脚 (CubeMX 在 main.h 生成的宏)
+#define ST7735_RES_Pin       LCD_RESET_Pin      // PB9
+#define ST7735_RES_GPIO_Port LCD_RESET_GPIO_Port
+#define ST7735_CS_Pin        LCD_CS_Pin         // PB4
+#define ST7735_CS_GPIO_Port  LCD_CS_GPIO_Port
+#define ST7735_DC_Pin        LCD_DC_Pin         // PB8
+#define ST7735_DC_GPIO_Port  LCD_DC_GPIO_Port
+```
 
-## License
+> 换平台/换引脚只需改这几个宏 + 保证 CubeMX 生成的宏名一致。屏幕电源使能 (EN) 由工程初始化阶段单独控制, 不属库职责。
 
-本项目采用 **MIT License**。详见 [LICENSE](LICENSE)。
+## 快速开始
 
-This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
+### 1. 初始化
 
----
+```cpp
+#include "st7735.hpp"
 
-*LoveFinderLib for STM32 HAL — 2026*
+// 必须在 CubeMX SPI + GPIO 初始化完成后调用 (含 EN 引脚拉高)
+ST7735_Init();                 // CS 拉低 -> RES 复位 -> 初始化命令序列 -> CS 拉高
+ST7735_FillScreen(ST7735_BLACK);
+```
+
+### 2. 字符与字符串
+
+```cpp
+// ASCII (完整字库)
+ST7735_WriteString(10, 10, "HELLO", Font_7x10, ST7735_WHITE, ST7735_BLACK);
+
+// UTF-8 中文 (字符级子集, 只编译"你好")
+ST7735_WriteStringUTF8(62, 28, "\xE4\xBD\xA0\xE5\xA5\xBD",
+                       Font_Subset_ZH_16x16, ST7735_YELLOW, ST7735_BLACK);
+
+// 格式化输出
+ST7735_Print(10, 30, Font_7x10, ST7735_GREEN, ST7735_BLACK, "Volt: %.2fV", 3.3f);
+```
+
+### 3. 图形 (空心 + 实心)
+
+```cpp
+ST7735_DrawLine(0, 0, 80, 40, ST7735_RED);            // 直线
+ST7735_DrawCircle(40, 40, 20, ST7735_YELLOW);         // 空心圆
+ST7735_FillCircle(100, 40, 20, ST7735_GREEN);         // 实心圆
+ST7735_DrawEllipse(60, 20, 25, 12, ST7735_CYAN);      // 空心椭圆
+ST7735_FillEllipse(120, 20, 25, 12, ST7735_MAGENTA);  // 实心椭圆
+ST7735_DrawRect(10, 60, 30, 15, ST7735_ORANGE);       // 空心矩形
+ST7735_FillRectangle(50, 60, 30, 15, ST7735_BLUE);    // 实心矩形
+ST7735_DrawRoundRect(90, 60, 30, 15, 5, ST7735_RED);  // 空心圆角矩形
+ST7735_FillRoundRect(130, 60, 24, 15, 5, ST7735_GREEN);// 实心圆角矩形
+ST7735_DrawTriangle(10, 20, 20, 40, 0, 40, ST7735_CYAN);       // 空心三角形
+ST7735_FillTriangle(30, 20, 40, 40, 20, 40, ST7735_YELLOW);    // 实心三角形
+
+int16_t xs[5] = {70, 85, 95, 80, 65};
+int16_t ys[5] = {25, 25, 40, 50, 40};
+ST7735_DrawPolygon(xs, ys, 5, ST7735_WHITE);          // 空心多边形
+ST7735_FillPolygon(xs, ys, 5, ST7735_ORANGE);         // 实心多边形 (扫描线填充)
+```
+
+### 4. DMA 高性能路径
+
+```cpp
+ST7735_FillScreen_DMA(ST7735_BLACK);        // DMA 全屏填充
+ST7735_FillRectangle_DMA(0, 0, 80, 40, ...); // DMA 区域填充
+ST7735_DrawImage_DMA(0, 0, 160, 80, img);    // DMA 图像 (RGB565)
+```
+
+> DMA 版内部为**阻塞式等待完成** (`dma_transfer_complete` 标志 + `HAL_SPI_TxCpltCallback`), 无需额外同步。
+
+## 字符级编译
+
+### 配置 (`fonts_config.hpp`)
+
+```cpp
+// ASCII 子集字符集 (按需增删)
+#define FONT_SUBSET_7X10_CHARS " !0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// 中文子集: 声明要编译的 Unicode 码点
+// 例: U+4F60=你  U+597D=好
+#define FONT_SUBSET_ZH_CHARS  { 0x4F60, 0x597D }
+```
+
+### 字模格式
+
+- ASCII 子集: 每个字符 `height` 个 `uint16_t`, **bit15 = 最左列**
+- 中文子集: 16x16, 每行一个 `uint16_t` (bit15=最左), 共 16 行
+
+### 生成新字模 (Python + PIL)
+
+```python
+from PIL import Image, ImageDraw, ImageFont
+font = ImageFont.truetype('C:/Windows/Fonts/simhei.ttf', 16)
+img = Image.new('L', (16, 16), 0)
+d = ImageDraw.Draw(img)
+bbox = d.textbbox((0,0), ch, font=font)
+d.text(((16-(bbox[2]-bbox[0]))//2-bbox[0], (16-(bbox[3]-bbox[1]))//2-bbox[1]), ch, font=font, fill=255)
+rows = []
+for r in range(16):
+    v = 0
+    for c in range(16):
+        if img.getpixel((c, r)) > 100: v |= (0x8000 >> c)   # bit15=最左列
+    rows.append(v)
+print(', '.join(f'0x{x:04X}' for x in rows))
+```
+
+### 未编译字符行为
+
+渲染时查表失败返回 `nullptr`, 该字符**自动跳过** (不显示也不占位), 其余字符不受影响。
+
+## 演示 (SmartOneT1)
+
+`Core/Src/st7735_lib_demo.cpp` — 5 页自动轮播:
+
+| 页面 | 内容 |
+|------|------|
+| Page 0 | 中文欢迎语 "你好" (仅 2 个字模 ~64B) |
+| Page 1 | 字符级编译演示 (子集字符) |
+| Page 2 | 空心图形 (线/圆/椭圆/三角/多边形/矩形/圆角矩形) |
+| Page 3 | 实心图形 (同系列填充) |
+| Page 4 | 图形叠加动画 (小球沿轨道旋转, 仅更新动态像素, 无整屏刷新) |
+
+## 移植指南
+
+1. CubeMX 配置 SPI (Master, 8bit, MSB, 速率≤10MHz) + 引脚 (SCK/MOSI/CS/DC/RESET/EN)
+2. 修改 `st7735.hpp` 的 `ST7735_SPI_PORT` / `ST7735_*_Pin` 宏
+3. 屏幕尺寸/偏移: `st7735.hpp` 中 `WIDTH`/`HEIGHT`/`XSTART`/`YSTART`/`ROTATION`
+4. 如需 DMA: CubeMX 开启 SPI TX DMA, 使用 `_DMA` 后缀函数
+5. 将 ST7735/ 下 `.cpp` 加入工程编译 (Keil: Add Existing Files)
+
+## 验收记录
+
+- Keil MDK-ARM (AC6 V6.24) 全量重建: **0 Error, 0 Warning**
+- 烧录: Erase/Program/Verify OK, Application running
+- 硬件实测 (SmartOneT1): 中文显示正常, 动画无闪烁, 上电直达 demo
+
+## 许可证
+
+MIT License
