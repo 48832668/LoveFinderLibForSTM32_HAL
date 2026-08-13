@@ -181,6 +181,9 @@ struct INA226_Config {
     e_INA226_ConvTime busConvTime;   // 总线转换时间
     e_INA226_AvgMode avgMode;       // 平均次数
 
+    GPIO_TypeDef* alertPort = nullptr;  // ALERT 引脚 GPIO 端口 (nullptr=不绑定)
+    uint16_t alertPin = 0;              // ALERT 引脚编号 (0=不绑定)
+
     // 默认配置工厂函数
     static INA226_Config getDefault() {
         return {
@@ -190,6 +193,7 @@ struct INA226_Config {
             e_INA226_ConvTime::CT_1100US,       // 1.1ms 转换
             e_INA226_ConvTime::CT_1100US,       // 1.1ms 转换
             e_INA226_AvgMode::AVG_16            // 16 次平均
+            // alertPort/alertPin 使用默认值: 不绑定 ALERT 引脚
         };
     }
 };
@@ -363,12 +367,6 @@ public:
     uint16_t getAlertFlags() const;
 
     /**
-     * @brief 设置告警引脚极性 (APOL, D1)
-     * @param activeHigh true=高有效, false=低有效 (默认)
-     */
-    void setAlertPolarity(bool activeHigh);
-
-    /**
      * @brief 设置告警锁存模式 (LEN, D0)
      *
      * true=锁存: 告警后保持激活, 直到读 Mask/Enable 或写 Configuration 才清除;
@@ -420,6 +418,38 @@ public:
      */
     uint16_t getCalibration() const;
 
+    /*------------------------------------------------------------------------
+     * ALERT 引脚绑定 (可选, 不绑定时所有功能仍可用)
+     *-----------------------------------------------------------------------*/
+
+    /**
+     * @brief 绑定 ALERT 引脚
+     *
+     * 绑定后可用 isAlertAsserted() 直接读引脚电平判断告警 (不占用 I2C),
+     * 也可配合 EXTI 下降沿中断在回调中调用。
+     * 注意: ALERT 引脚为开漏输出, **必须外接上拉电阻** (上拉到 VVS),
+     * 告警时芯片内部拉低, 因此本库固定为**低有效 + 下降沿中断**语义。
+     *
+     * @param port GPIO 端口
+     * @param pin GPIO 引脚编号
+     */
+    void bindAlertPin(GPIO_TypeDef* port, uint16_t pin);
+
+    /**
+     * @brief 解除 ALERT 引脚绑定 (回到仅寄存器轮询模式)
+     */
+    void unbindAlertPin();
+
+    /**
+     * @brief 读取 ALERT 引脚电平判断是否有告警
+     *
+     * 固定低有效语义: 引脚为低电平 = 有告警 (需外部上拉, 配合下降沿中断)。
+     * 未绑定引脚时恒返回 false。
+     *
+     * @return true=当前有告警
+     */
+    bool isAlertAsserted() const;
+
     /**
      * @brief 扫描 I2C 总线上所有 INA226 设备 (SCANINA226)
      *
@@ -462,6 +492,8 @@ private:
     float m_shuntResistance_mOhm = 10.0f;   // 检流电阻 (毫欧)
     float m_currentLSB_uA = 0.0f;           // 电流 LSB (uA, 校准后)
     uint16_t m_configValue = 0;             // 最近写入的配置寄存器值 (触发转换用)
+    GPIO_TypeDef* m_alertPort = nullptr;    // ALERT 引脚 GPIO 端口 (nullptr=未绑定)
+    uint16_t m_alertPin = 0;                // ALERT 引脚编号 (0=未绑定)
 };
 
 } // namespace LoveFinderLib

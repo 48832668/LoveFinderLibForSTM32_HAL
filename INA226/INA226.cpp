@@ -34,6 +34,10 @@ void INA226::init(I2C_HandleTypeDef* i2c, const INA226_Config& config)
     m_shuntResistance_mOhm = config.shuntResistance_mOhm;
     m_currentLSB_uA = 0.0f;
 
+    // 可选: 绑定 ALERT 引脚 (config.alertPort==nullptr 或 alertPin==0 时不绑定)
+    m_alertPort = config.alertPort;
+    m_alertPin = config.alertPin;
+
     // 按配置写工作模式 / 转换时间 / 平均次数
     // 注意: 参数名 config 会遮蔽同名成员函数, 需用 this-> 显式调用
     this->config(config.mode, config.shuntConvTime, config.busConvTime, config.avgMode);
@@ -162,6 +166,8 @@ void INA226::reset()
 
 void INA226::setMaskEnable(uint16_t mask)
 {
+    // 固定低有效告警: 强制清零 APOL (D1), 保证引脚/EXTI 恒为下降沿触发语义
+    mask &= ~static_cast<uint16_t>(e_INA226_AlertFlag::APOL);
     writeReg(e_INA226_Reg::MASK_ENABLE, mask);
 }
 
@@ -225,22 +231,6 @@ uint16_t INA226::getAlertFlags() const
     return readReg(e_INA226_Reg::MASK_ENABLE);
 }
 
-void INA226::setAlertPolarity(bool activeHigh)
-{
-    uint16_t mask = readReg(e_INA226_Reg::MASK_ENABLE);
-
-    if (activeHigh)
-    {
-        mask |= static_cast<uint16_t>(e_INA226_AlertFlag::APOL);
-    }
-    else
-    {
-        mask &= ~static_cast<uint16_t>(e_INA226_AlertFlag::APOL);
-    }
-
-    writeReg(e_INA226_Reg::MASK_ENABLE, mask);
-}
-
 void INA226::setAlertLatch(bool enable)
 {
     uint16_t mask = readReg(e_INA226_Reg::MASK_ENABLE);
@@ -286,6 +276,34 @@ uint16_t INA226::getConfig() const
 uint16_t INA226::getCalibration() const
 {
     return readReg(e_INA226_Reg::CALIBRATION);
+}
+
+/*------------------------------------------------------------------------
+ * ALERT 引脚绑定
+ *-----------------------------------------------------------------------*/
+
+void INA226::bindAlertPin(GPIO_TypeDef* port, uint16_t pin)
+{
+    m_alertPort = port;
+    m_alertPin = pin;
+}
+
+void INA226::unbindAlertPin()
+{
+    m_alertPort = nullptr;
+    m_alertPin = 0;
+}
+
+bool INA226::isAlertAsserted() const
+{
+    // 未绑定引脚: 无法判断, 恒返回 false (回到纯寄存器轮询模式)
+    if (m_alertPort == nullptr || m_alertPin == 0)
+    {
+        return false;
+    }
+
+    // 固定低有效语义: ALERT 开漏 + 外部上拉, 告警时芯片拉低 (下降沿)
+    return HAL_GPIO_ReadPin(m_alertPort, m_alertPin) == GPIO_PIN_RESET;
 }
 
 uint8_t INA226::getDieRevision() const

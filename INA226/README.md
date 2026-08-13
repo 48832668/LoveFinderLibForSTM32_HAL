@@ -20,6 +20,7 @@
 - ✅ 工作模式 / 转换时间 / 平均次数配置（`config()` 或初始化时 `INA226_Config`）。
 - ✅ 校准（`setCalibration()`），支持运行期修改分流电阻。
 - ✅ **告警系统**：告警使能（`setMaskEnable`）、物理量阈值（`setAlertLimit`）、告警标志读取（`getAlertFlags`）、极性/锁存配置。
+- ✅ **ALERT 引脚可选绑定**：`bindAlertPin()` / `bindAlertPin` 支持绑定 ALERT 引脚读电平或配合 EXTI 中断；**不绑定时所有功能仍可用**（`getAlertFlags()` 纯寄存器轮询）。
 - ✅ **触发模式单次转换**：`triggerConversion()` + `isConversionReady()` 轮询转换完成。
 - ✅ 配置/校准寄存器读回（`getConfig()` / `getCalibration()`），Die 修订号（`getDieRevision()`）。
 - ✅ 软件复位（`reset()`）。
@@ -166,8 +167,12 @@ uint16_t getMaskEnable() const;                 // 读回告警使能
 void     setAlertLimit(float value, e_INA226_AlertType type);  // 物理量阈值
 float    getAlertLimit(e_INA226_AlertType type) const;         // 读回阈值 (物理量)
 uint16_t getAlertFlags() const;                 // 告警源标志 + AFF/CVRF/OVF
-void     setAlertPolarity(bool activeHigh);     // 告警引脚极性
 void     setAlertLatch(bool enable);            // 告警锁存 (true=锁存)
+
+// ---- ALERT 引脚绑定 (可选, 固定低有效/下降沿) ----
+void bindAlertPin(GPIO_TypeDef* port, uint16_t pin);  // 绑定 ALERT 引脚
+void unbindAlertPin();                                // 解除绑定
+bool isAlertAsserted() const;                         // 读引脚: 低电平=有告警
 
 // ---- 触发模式单次转换 ----
 void triggerConversion();                       // 触发一次转换
@@ -225,7 +230,8 @@ void app_scan_demo(void)
 - **地址务必匹配实际 A0/A1 接线**：地址由硬件引脚决定，`INA226_Config::getDefault()` 默认 `A0_GND_A1_GND`（0x40）。若接线不同，改 `cfg.i2cAddr` 枚举即可。
 - **分流电阻**（`shuntResistance_mOhm`）与**最大期望电流**（`setCalibration` 参数）务必按实际硬件填写，否则电流/功率读数不准。
 - 电流 / 功率读数依赖校准寄存器，**必须先 `setCalibration()` 再读取**，否则 `getCurrent()`/`getPower()` 返回 0。
-- **告警引脚是开漏输出**：使用告警功能（`setMaskEnable`）时，ALERT 引脚必须外接上拉电阻（上拉到 VVS）。
+- **告警引脚是开漏输出，必须外部上拉**：使用告警功能（`setMaskEnable`）时，ALERT 引脚必须外接上拉电阻（上拉到 VVS）。本库固定**低有效 + 下降沿**中断语义，不支持高有效（`setMaskEnable` 内部强制清零 APOL 位）。
+- **ALERT 引脚绑定为可选项**：`INA226_Config` 的 `alertPort`/`alertPin` 默认 `nullptr`/`0`，`bindAlertPin()` 不调用即不绑定。**不绑定时告警功能依然完整可用**（`getAlertFlags()` 纯寄存器轮询，不依赖引脚）；`isAlertAsserted()` 仅在绑定后有效，未绑定恒返回 `false`。
 - **同一时刻只能激活一个告警源**：若多个告警使能位同时置位，最高位（SOL 优先）的告警生效。
 - **负阈值以补码写入**：分流欠压（`SHUNT_UNDER`）等负方向阈值由 `setAlertLimit` 自动转换；单个 ALERT_LIMIT 寄存器无法同时覆盖正负两个方向，电流换向须重写阈值。
 - **告警比较基于单次转换值**：高 AVG 档位下告警可能被瞬时尖峰触发，需要精确告警时建议 `AVG_1`。
@@ -254,6 +260,9 @@ void app_init(void)
     cfg.shuntResistance_mOhm = 10.0f;
     ina.init(&hi2c1, cfg);
     ina.setCalibration(3.0f);
+
+    // (可选) 绑定 ALERT 引脚: 板子上无此引脚 / 不想用中断时, 跳过即可
+    // ina.bindAlertPin(ALERT_GPIO_Port, ALERT_Pin);   // CubeMX 生成的宏
 
     // 告警: 分流过压 80mV (SOL), 锁存模式, 低有效 (默认)
     ina.setAlertLatch(true);                                    // 锁存, 读 0x06 后清除
@@ -286,8 +295,32 @@ void app_loop(void)
     {
         // 运算溢出: 电流/功率读数无效
     }
+
+    // 已绑定 ALERT 引脚时, 可零 I2C 开销读电平 (需外接上拉)
+    // if (ina.isAlertAsserted()) { /* 有告警 */ }
 }
 ```
+
+### ALERT 引脚 + EXTI 下降沿中断用法（可选）
+
+```cpp
+// 1. CubeMX 中把 ALERT 引脚配置为 GPIO_EXTI (上拉输入), 下降沿触发
+// 2. 初始化时绑定:
+ina.bindAlertPin(ALERT_GPIO_Port, ALERT_Pin);   // CubeMX 生成的宏
+
+// 3. 中断回调中读标志 (低有效: 告警时引脚拉低 → 下降沿)
+volatile uint16_t g_alertFlags = 0;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == ALERT_Pin)
+    {
+        g_alertFlags = ina.getAlertFlags();   // 读+清除锁存告警
+    }
+}
+```
+
+> **注意**：ALERT 引脚为开漏输出，**必须外部上拉**（上拉到 VVS）。本库固定**低有效 + 下降沿**中断语义（`setMaskEnable` 内部强制清零 APOL 极性位），不支持高有效配置。
 
 ---
 
