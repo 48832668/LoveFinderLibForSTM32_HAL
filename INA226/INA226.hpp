@@ -105,6 +105,45 @@ enum class e_INA226_Mode : uint8_t {
 };
 
 /*============================================================================
+ * 告警类型枚举 (e_INA226_AlertType) —— setAlertLimit 物理量换算依据
+ *
+ * 对应 Mask/Enable 寄存器 (0x06) 的告警使能位, 决定 ALERT_LIMIT (0x07)
+ * 阈值寄存器与哪个测量值比较, 以及阈值的 LSB 缩放:
+ *  - 分流电压 (SOL/SUL): LSB = 2.5uV, 可为负值 (二进制补码)
+ *  - 总线电压 (BOL/BUL): LSB = 1.25mV
+ *  - 功率     (POL):     LSB = 25 x Current_LSB
+ *============================================================================*/
+
+enum class e_INA226_AlertType : uint8_t {
+    SHUNT_OVER  = 0,   // 分流电压过压告警 (SOL), 阈值单位 uV
+    SHUNT_UNDER = 1,   // 分流电压欠压告警 (SUL), 阈值单位 uV (可负)
+    BUS_OVER    = 2,   // 总线电压过压告警 (BOL), 阈值单位 mV
+    BUS_UNDER   = 3,   // 总线电压欠压告警 (BUL), 阈值单位 mV
+    POWER_OVER  = 4    // 功率过限告警     (POL), 阈值单位 mW
+};
+
+/*============================================================================
+ * 告警位定义 (e_INA226_AlertFlag) —— Mask/Enable 寄存器 (0x06) 各位
+ *
+ * D15~D10: 告警使能位, 读取时同时反映告警源状态 (透明模式下随故障清除复位);
+ * D4~D2:   只读状态标志位; D1/D0: 告警引脚行为配置位。
+ *============================================================================*/
+
+enum class e_INA226_AlertFlag : uint16_t {
+    SOL  = 0x8000,   // D15 分流电压过压告警 使能/标志
+    SUL  = 0x4000,   // D14 分流电压欠压告警 使能/标志
+    BOL  = 0x2000,   // D13 总线电压过压告警 使能/标志
+    BUL  = 0x1000,   // D12 总线电压欠压告警 使能/标志
+    POL  = 0x0800,   // D11 功率过限告警     使能/标志
+    CNVR = 0x0400,   // D10 转换完成告警 (ALERT 引脚输出 CVRF)
+    AFF  = 0x0010,   // D4  告警功能标志 (只读)
+    CVRF = 0x0008,   // D3  转换完成标志 (只读)
+    OVF  = 0x0004,   // D2  运算溢出标志 (只读, 电流/功率可能无效)
+    APOL = 0x0002,   // D1  告警极性: 0=低有效(默认) 1=高有效
+    LEN  = 0x0001    // D0  告警锁存: 0=透明(默认) 1=锁存
+};
+
+/*============================================================================
  * I2C 从机地址枚举 (由外部 A0/A1 引脚连接决定)
  *
  * 16 种组合: A0/A1 可接 GND / VS / SDA / SCL。
@@ -249,9 +288,15 @@ public:
 
     /**
      * @brief 获取 Die ID
-     * @return 应返回 0x2260
+     * @return 应返回 0x2260 (USA/Japan) 或 0x2261 (USA)
      */
     uint16_t getDieID() const;
+
+    /**
+     * @brief 获取 Die 修订版本号 (Die ID 低 4 位 RID3~RID0)
+     * @return 修订版本 (0~15)
+     */
+    uint8_t getDieRevision() const;
 
     /**
      * @brief 检测设备是否在线
@@ -263,6 +308,117 @@ public:
      * @brief 软件复位
      */
     void reset();
+
+    /*------------------------------------------------------------------------
+     * 告警系统 (MASK_ENABLE 0x06 / ALERT_LIMIT 0x07)
+     *-----------------------------------------------------------------------*/
+
+    /**
+     * @brief 设置告警使能寄存器 (Mask/Enable 0x06)
+     *
+     * 仅能同时激活一个告警源 (若多个使能, 最高位优先); ALERT 引脚为开漏,
+     * 必须外接上拉电阻。使用 e_INA226_AlertFlag 位掩码:
+     *   setMaskEnable(e_INA226_AlertFlag::SOL);
+     * 该操作也会写入 APOL/LEN 配置位。
+     *
+     * @param mask 位掩码 (e_INA226_AlertFlag)
+     */
+    void setMaskEnable(uint16_t mask);
+
+    /**
+     * @brief 读取告警使能寄存器 (Mask/Enable 0x06)
+     * @return 当前 Mask/Enable 值 (含 APOL/LEN 配置位)
+     */
+    uint16_t getMaskEnable() const;
+
+    /**
+     * @brief 设置告警阈值寄存器 (Alert Limit 0x07)
+     *
+     * 阈值按告警类型自动换算为寄存器 LSB:
+     *  - SHUNT_OVER/SHUNT_UNDER: value 单位 uV, LSB 2.5uV, 负值自动转补码
+     *  - BUS_OVER/BUS_UNDER:     value 单位 mV, LSB 1.25mV
+     *  - POWER_OVER:             value 单位 mW, LSB 25 x Current_LSB
+     * 注意: 单个阈值寄存器无法同时覆盖正负两个电流方向, 换向须重写。
+     *
+     * @param value 阈值物理量 (uV / mV / mW)
+     * @param type 告警类型 (e_INA226_AlertType)
+     */
+    void setAlertLimit(float value, e_INA226_AlertType type);
+
+    /**
+     * @brief 读取告警阈值寄存器 (Alert Limit 0x07) 并换算回物理量
+     * @param type 告警类型 (e_INA226_AlertType)
+     * @return 阈值物理量 (uV / mV / mW)
+     */
+    float getAlertLimit(e_INA226_AlertType type) const;
+
+    /**
+     * @brief 读取告警标志 (Mask/Enable 0x06 读回)
+     *
+     * 返回 D15~D10 (告警源标志) 与 D4~D2 (AFF/CVRF/OVF 状态位)。
+     * 注意: 读操作会清除 CVRF (锁存模式下连同 AFF 一并清除)。
+     *
+     * @return 告警标志位 (e_INA226_AlertFlag 位掩码)
+     */
+    uint16_t getAlertFlags() const;
+
+    /**
+     * @brief 设置告警引脚极性 (APOL, D1)
+     * @param activeHigh true=高有效, false=低有效 (默认)
+     */
+    void setAlertPolarity(bool activeHigh);
+
+    /**
+     * @brief 设置告警锁存模式 (LEN, D0)
+     *
+     * true=锁存: 告警后保持激活, 直到读 Mask/Enable 或写 Configuration 才清除;
+     * false=透明: 故障消失后自动复位 (默认)。
+     *
+     * @param enable true=锁存, false=透明
+     */
+    void setAlertLatch(bool enable);
+
+    /*------------------------------------------------------------------------
+     * 转换控制 (触发模式)
+     *-----------------------------------------------------------------------*/
+
+    /**
+     * @brief 触发一次单次转换
+     *
+     * 需先将工作模式配置为触发模式 (SHUNT_TRIG/BUS_TRIG/SHUNT_BUS_TRIG),
+     * 每次调用写入配置寄存器 (即使值不变) 即触发下一次转换。
+     * 转换完成后可用 isConversionReady() 轮询。
+     */
+    void triggerConversion();
+
+    /**
+     * @brief 查询转换是否完成 (CVRF, D3)
+     *
+     * 转换+平均+乘法全部完成后置位。注意: 每次读取会清除 CVRF,
+     * 因此连续轮询时应在读到 true 后重新 triggerConversion()。
+     *
+     * @return true=转换完成
+     */
+    bool isConversionReady() const;
+
+    /*------------------------------------------------------------------------
+     * 状态读回
+     *-----------------------------------------------------------------------*/
+
+    /**
+     * @brief 读取配置寄存器 (0x00) 原始值
+     *
+     * 寄存器为易失性, 上电后若更改过默认值必须重新写入 (手册 6.5.4)。
+     *
+     * @return 配置寄存器值
+     */
+    uint16_t getConfig() const;
+
+    /**
+     * @brief 读取校准寄存器 (0x05) 原始值
+     * @return 校准寄存器值
+     */
+    uint16_t getCalibration() const;
 
     /**
      * @brief 扫描 I2C 总线上所有 INA226 设备 (SCANINA226)
@@ -305,6 +461,7 @@ private:
     e_INA226_I2CAddr m_addr = e_INA226_I2CAddr::A0_GND_A1_GND;  // 7 位从机地址
     float m_shuntResistance_mOhm = 10.0f;   // 检流电阻 (毫欧)
     float m_currentLSB_uA = 0.0f;           // 电流 LSB (uA, 校准后)
+    uint16_t m_configValue = 0;             // 最近写入的配置寄存器值 (触发转换用)
 };
 
 } // namespace LoveFinderLib

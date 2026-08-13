@@ -83,6 +83,7 @@ void INA226::config(e_INA226_Mode mode, e_INA226_ConvTime shuntCT,
                  | (static_cast<uint16_t>(shuntCT) << 3)
                  | static_cast<uint16_t>(mode);
 
+    m_configValue = cfg;    // 记录最近配置 (triggerConversion 重写用)
     writeReg(e_INA226_Reg::CONFIGURATION, cfg);
 }
 
@@ -153,6 +154,144 @@ void INA226::reset()
     // 写复位命令到配置寄存器 (bit15)
     writeReg(e_INA226_Reg::CONFIGURATION, 0x8000u);
     HAL_Delay(10);
+}
+
+/*------------------------------------------------------------------------
+ * 告警系统
+ *-----------------------------------------------------------------------*/
+
+void INA226::setMaskEnable(uint16_t mask)
+{
+    writeReg(e_INA226_Reg::MASK_ENABLE, mask);
+}
+
+uint16_t INA226::getMaskEnable() const
+{
+    return readReg(e_INA226_Reg::MASK_ENABLE);
+}
+
+void INA226::setAlertLimit(float value, e_INA226_AlertType type)
+{
+    uint16_t limit = 0;
+
+    switch (type)
+    {
+    case e_INA226_AlertType::SHUNT_OVER:
+    case e_INA226_AlertType::SHUNT_UNDER:
+        // 分流电压阈值: LSB = 2.5uV, 负值自动转为补码
+        limit = static_cast<uint16_t>(static_cast<int16_t>(value / SHUNT_VOLTAGE_LSB_uV));
+        break;
+
+    case e_INA226_AlertType::BUS_OVER:
+    case e_INA226_AlertType::BUS_UNDER:
+        // 总线电压阈值: LSB = 1.25mV
+        limit = static_cast<uint16_t>(value / BUS_VOLTAGE_LSB_mV);
+        break;
+
+    case e_INA226_AlertType::POWER_OVER:
+        // 功率阈值: LSB = 25 x Current_LSB (uA) / 1000 → mW
+        limit = static_cast<uint16_t>(value / (25.0f * m_currentLSB_uA / 1000.0f));
+        break;
+    }
+
+    writeReg(e_INA226_Reg::ALERT_LIMIT, limit);
+}
+
+float INA226::getAlertLimit(e_INA226_AlertType type) const
+{
+    uint16_t raw = readReg(e_INA226_Reg::ALERT_LIMIT);
+
+    switch (type)
+    {
+    case e_INA226_AlertType::SHUNT_OVER:
+    case e_INA226_AlertType::SHUNT_UNDER:
+        // 按有符号解释 (负阈值以补码存储)
+        return static_cast<float>(static_cast<int16_t>(raw)) * SHUNT_VOLTAGE_LSB_uV;
+
+    case e_INA226_AlertType::BUS_OVER:
+    case e_INA226_AlertType::BUS_UNDER:
+        return static_cast<float>(raw) * BUS_VOLTAGE_LSB_mV;
+
+    case e_INA226_AlertType::POWER_OVER:
+        return static_cast<float>(raw) * (25.0f * m_currentLSB_uA / 1000.0f);
+    }
+
+    return 0.0f;
+}
+
+uint16_t INA226::getAlertFlags() const
+{
+    // 读 0x06: 高 6 位 (D15~D10) 为告警源标志, D4/D3/D2 为 AFF/CVRF/OVF
+    return readReg(e_INA226_Reg::MASK_ENABLE);
+}
+
+void INA226::setAlertPolarity(bool activeHigh)
+{
+    uint16_t mask = readReg(e_INA226_Reg::MASK_ENABLE);
+
+    if (activeHigh)
+    {
+        mask |= static_cast<uint16_t>(e_INA226_AlertFlag::APOL);
+    }
+    else
+    {
+        mask &= ~static_cast<uint16_t>(e_INA226_AlertFlag::APOL);
+    }
+
+    writeReg(e_INA226_Reg::MASK_ENABLE, mask);
+}
+
+void INA226::setAlertLatch(bool enable)
+{
+    uint16_t mask = readReg(e_INA226_Reg::MASK_ENABLE);
+
+    if (enable)
+    {
+        mask |= static_cast<uint16_t>(e_INA226_AlertFlag::LEN);
+    }
+    else
+    {
+        mask &= ~static_cast<uint16_t>(e_INA226_AlertFlag::LEN);
+    }
+
+    writeReg(e_INA226_Reg::MASK_ENABLE, mask);
+}
+
+/*------------------------------------------------------------------------
+ * 转换控制
+ *-----------------------------------------------------------------------*/
+
+void INA226::triggerConversion()
+{
+    // 触发模式: 再次写入配置寄存器 (即使值不变) 即触发下一次转换
+    writeReg(e_INA226_Reg::CONFIGURATION, m_configValue);
+}
+
+bool INA226::isConversionReady() const
+{
+    // 轮询 CVRF (D3): 转换+平均+乘法完成后置位
+    // 注意: 读 0x06 会清除 CVRF, 应在读到 true 后重新 triggerConversion()
+    return (readReg(e_INA226_Reg::MASK_ENABLE) & static_cast<uint16_t>(e_INA226_AlertFlag::CVRF)) != 0;
+}
+
+/*------------------------------------------------------------------------
+ * 状态读回
+ *-----------------------------------------------------------------------*/
+
+uint16_t INA226::getConfig() const
+{
+    return readReg(e_INA226_Reg::CONFIGURATION);
+}
+
+uint16_t INA226::getCalibration() const
+{
+    return readReg(e_INA226_Reg::CALIBRATION);
+}
+
+uint8_t INA226::getDieRevision() const
+{
+    // Die ID 低 4 位为修订版本 (RID3~RID0)
+    return static_cast<uint8_t>(readReg(e_INA226_Reg::DIE_ID) & 0x0Fu);
 }
 
 uint8_t INA226::SCANINA226(I2C_HandleTypeDef* i2c,

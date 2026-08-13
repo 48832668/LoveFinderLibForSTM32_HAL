@@ -19,6 +19,9 @@
 - ✅ **总线扫描 `SCANINA226()`**：遍历地址表全部 16 个地址，逐个通讯探测 + 制造商 ID 校验（0x5449），一次性找出总线上所有可用的 INA226 设备。
 - ✅ 工作模式 / 转换时间 / 平均次数配置（`config()` 或初始化时 `INA226_Config`）。
 - ✅ 校准（`setCalibration()`），支持运行期修改分流电阻。
+- ✅ **告警系统**：告警使能（`setMaskEnable`）、物理量阈值（`setAlertLimit`）、告警标志读取（`getAlertFlags`）、极性/锁存配置。
+- ✅ **触发模式单次转换**：`triggerConversion()` + `isConversionReady()` 轮询转换完成。
+- ✅ 配置/校准寄存器读回（`getConfig()` / `getCalibration()`），Die 修订号（`getDieRevision()`）。
 - ✅ 软件复位（`reset()`）。
 - ✅ 纯 C++17 接口，位于 `LoveFinderLib` 命名空间，与 BUTTON/ENCODER 库风格一致。
 
@@ -152,9 +155,27 @@ float    getShuntVoltage() const;   // uV (可负)
 float    getCurrent() const;        // mA
 float    getPower() const;          // mW
 uint16_t getManufacturerID() const; // 应为 0x5449 ('TI')
-uint16_t getDieID() const;          // 应为 0x2260
+uint16_t getDieID() const;          // 应为 0x2260 / 0x2261
+uint8_t  getDieRevision() const;    // Die 修订版本 (低 4 位)
 bool     isOnline() const;          // 在线检测
 void     reset();                   // 软件复位
+
+// ---- 告警系统 (MASK_ENABLE 0x06 / ALERT_LIMIT 0x07) ----
+void     setMaskEnable(uint16_t mask);          // 告警使能 (e_INA226_AlertFlag 位掩码)
+uint16_t getMaskEnable() const;                 // 读回告警使能
+void     setAlertLimit(float value, e_INA226_AlertType type);  // 物理量阈值
+float    getAlertLimit(e_INA226_AlertType type) const;         // 读回阈值 (物理量)
+uint16_t getAlertFlags() const;                 // 告警源标志 + AFF/CVRF/OVF
+void     setAlertPolarity(bool activeHigh);     // 告警引脚极性
+void     setAlertLatch(bool enable);            // 告警锁存 (true=锁存)
+
+// ---- 触发模式单次转换 ----
+void triggerConversion();                       // 触发一次转换
+bool isConversionReady() const;                 // 轮询转换完成 (CVRF)
+
+// ---- 状态读回 ----
+uint16_t getConfig() const;                     // 配置寄存器原始值
+uint16_t getCalibration() const;                // 校准寄存器原始值
 
 // 静态方法: 扫描 I2C 总线上所有 INA226 设备 (SCANINA226)
 static uint8_t SCANINA226(I2C_HandleTypeDef* i2c,
@@ -204,8 +225,69 @@ void app_scan_demo(void)
 - **地址务必匹配实际 A0/A1 接线**：地址由硬件引脚决定，`INA226_Config::getDefault()` 默认 `A0_GND_A1_GND`（0x40）。若接线不同，改 `cfg.i2cAddr` 枚举即可。
 - **分流电阻**（`shuntResistance_mOhm`）与**最大期望电流**（`setCalibration` 参数）务必按实际硬件填写，否则电流/功率读数不准。
 - 电流 / 功率读数依赖校准寄存器，**必须先 `setCalibration()` 再读取**，否则 `getCurrent()`/`getPower()` 返回 0。
+- **告警引脚是开漏输出**：使用告警功能（`setMaskEnable`）时，ALERT 引脚必须外接上拉电阻（上拉到 VVS）。
+- **同一时刻只能激活一个告警源**：若多个告警使能位同时置位，最高位（SOL 优先）的告警生效。
+- **负阈值以补码写入**：分流欠压（`SHUNT_UNDER`）等负方向阈值由 `setAlertLimit` 自动转换；单个 ALERT_LIMIT 寄存器无法同时覆盖正负两个方向，电流换向须重写阈值。
+- **告警比较基于单次转换值**：高 AVG 档位下告警可能被瞬时尖峰触发，需要精确告警时建议 `AVG_1`。
+- **读 MASK_ENABLE 会清除 CVRF**：`isConversionReady()` 每次调用会清除转换完成标志，连续转换应在读到 `true` 后重新 `triggerConversion()`。
+- **触发模式**：`config()` 将模式设为 `SHUNT_TRIG` / `BUS_TRIG` / `SHUNT_BUS_TRIG` 后，每次 `triggerConversion()` 触发一次单次转换，用 `isConversionReady()` 轮询完成。
+- 配置 / 校准寄存器为**易失性**，上电后若改动过默认值需重新写入（可用 `getConfig()` 校验）。
 - 本库为 **C++17**，请确保工程开启 C++（Keil MDK 中把源文件设为 `.cpp` 或启用 C++ 编译）。
 - 只依赖 ST 标准 HAL 库；非 STM32 / 非 HAL 的外设库不支持。
+
+---
+
+## 9. 告警与触发模式示例
+
+```cpp
+#include "main.h"
+#include "INA226.hpp"
+using namespace LoveFinderLib;
+
+extern I2C_HandleTypeDef hi2c1;
+INA226 ina;
+
+void app_init(void)
+{
+    INA226_Config cfg = INA226_Config::getDefault();
+    cfg.i2cAddr              = e_INA226_I2CAddr::A0_GND_A1_GND;
+    cfg.shuntResistance_mOhm = 10.0f;
+    ina.init(&hi2c1, cfg);
+    ina.setCalibration(3.0f);
+
+    // 告警: 分流过压 80mV (SOL), 锁存模式, 低有效 (默认)
+    ina.setAlertLatch(true);                                    // 锁存, 读 0x06 后清除
+    ina.setAlertLimit(80000.0f, e_INA226_AlertType::SHUNT_OVER); // 80mV = 80000uV
+    ina.setMaskEnable(static_cast<uint16_t>(e_INA226_AlertFlag::SOL));
+
+    // 触发模式单次转换 (告警精确场景建议 AVG_1)
+    ina.config(e_INA226_Mode::SHUNT_BUS_TRIG, e_INA226_ConvTime::CT_1100US,
+               e_INA226_ConvTime::CT_1100US, e_INA226_AvgMode::AVG_1);
+}
+
+void app_loop(void)
+{
+    // 单次转换: 触发 → 轮询完成 → 读数
+    ina.triggerConversion();
+    if (ina.isConversionReady())
+    {
+        float bus_mV = ina.getBusVoltage();
+        float cur_mA = ina.getCurrent();
+        // ...
+    }
+
+    // 告警状态检查 (读 0x06 同时清除锁存告警与 CVRF)
+    uint16_t flags = ina.getAlertFlags();
+    if (flags & static_cast<uint16_t>(e_INA226_AlertFlag::SOL))
+    {
+        // 分流过压告警触发
+    }
+    if (flags & static_cast<uint16_t>(e_INA226_AlertFlag::OVF))
+    {
+        // 运算溢出: 电流/功率读数无效
+    }
+}
+```
 
 ---
 
