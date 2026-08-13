@@ -275,6 +275,34 @@ public:
      */
     e_W25QFLASH_Model getModel() const { return m_model; }
 
+    /*------------------------------------------------------------------------
+     * 图片存储辅助 (ImageTransfer 使用)
+     *-----------------------------------------------------------------------*/
+
+    // 图片格式常量 (160x80 RGB565, 与 ImageTransfer 协议一致)
+    static constexpr uint16_t IMAGE_WIDTH     = 160;
+    static constexpr uint16_t IMAGE_HEIGHT    = 80;
+    static constexpr uint32_t IMAGE_SIZE      = IMAGE_WIDTH * IMAGE_HEIGHT * 2;   // 25600 字节
+    static constexpr uint16_t IMAGE_PAGES     = (IMAGE_SIZE + 255u) / 256u;        // 100 页
+    static constexpr uint32_t IMAGE_STRIDE    = IMAGE_PAGES * 256u;                // 每张图片占 25600 字节
+
+    /**
+     * @brief 计算图片在 Flash 中的起始地址
+     * @param index 图片索引 (0 起)
+     * @return 起始地址
+     */
+    static uint32_t getImageAddress(uint16_t index) {
+        return static_cast<uint32_t>(index) * IMAGE_STRIDE;
+    }
+
+    /**
+     * @brief 计算可存储的最大图片数 (容量感知, 基于识别出的型号)
+     * @return 最大图片数 (如 W25Q256 → 32MB/25600 = 1310)
+     */
+    uint16_t getMaxImages() const {
+        return static_cast<uint16_t>(getCapacityBytes() / IMAGE_STRIDE);
+    }
+
 private:
     /*===== CS 片选控制 =====*/
     void select() const;
