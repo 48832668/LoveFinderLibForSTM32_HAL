@@ -1,6 +1,6 @@
 /**
  * @file BUTTON.cpp
- * @brief EXTI-Driven Button Driver Implementation - C++17
+ * @brief EXTI-Driven Button Driver Implementation - C++17 (LoveFinderLib)
  */
 
 #include "BUTTON.hpp"
@@ -57,7 +57,6 @@ void Button::init(GPIO_TypeDef* port, uint16_t pin, const BUTTON_Config& config)
     m_counter = {0, 0, 0};
     m_lastEvent = e_BUTTON_Event::NONE;
     m_hasEvent = false;
-    m_flags = 0;
 
     // 硬性要求: KEY 必须启用 EXTI，并配置为下降沿触发 + 启用 NVIC。
     configureExti();
@@ -158,7 +157,7 @@ void Button::pushEvent(e_BUTTON_Event e)
 {
     m_lastEvent = e;
     m_hasEvent = true;
-    m_flags |= flagOf(e);   // 累积事件标志位，供 UI 非破坏/读取清除
+    m_flags |= flagOf(e);   // 累积事件标志位 (供 UI 非破坏读取/读取清除)
 }
 
 e_BUTTON_Event Button::update()
