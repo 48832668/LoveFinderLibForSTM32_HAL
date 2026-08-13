@@ -312,16 +312,15 @@ void W25QFLASH::transferMulti(const uint8_t* txData, uint8_t* rxData, uint32_t l
         }
         else if (rxData != nullptr)
         {
-            // DMA 接收需要先发送 dummy 字节 (DMA 需要静态内存)
-            static uint8_t dummyTx[256];
-            memset(dummyTx, 0xFF, sizeof(dummyTx));
+            // DMA 读回需要先发 dummy 字节 (DMA 需要稳定的发送缓冲, 用实例成员避免多实例共享)
+            memset(m_dummyTx, 0xFF, sizeof(m_dummyTx));
 
             uint32_t remaining = len;
             uint32_t offset = 0;
             while (remaining > 0)
             {
-                uint32_t chunkSize = (remaining > sizeof(dummyTx)) ? sizeof(dummyTx) : remaining;
-                HAL_SPI_TransmitReceive_DMA(m_hspi, dummyTx, rxData + offset, chunkSize);
+                uint32_t chunkSize = (remaining > sizeof(m_dummyTx)) ? sizeof(m_dummyTx) : remaining;
+                HAL_SPI_TransmitReceive_DMA(m_hspi, m_dummyTx, rxData + offset, chunkSize);
                 while (HAL_SPI_GetState(m_hspi) != HAL_SPI_STATE_READY) {}
                 offset += chunkSize;
                 remaining -= chunkSize;

@@ -327,6 +327,7 @@ private:
     uint32_t m_timeout = 5000;              // 忙等待超时 (ms)
     e_W25QFLASH_Model m_model = e_W25QFLASH_Model::UNKNOWN;  // 识别出的型号
     bool m_addr4Bytes = false;              // 是否使用 4 字节地址 (W25Q256/512)
+    uint8_t m_dummyTx[256];                 // DMA 读回用 dummy 发送缓冲 (实例级, 避免多实例共享)
 };
 
 } // namespace LoveFinderLib
