@@ -15,6 +15,8 @@ A modular collection of STM32 peripheral drivers, written in modern C++17 with a
 |------|------|----------|
 | [**BUTTON**](BUTTON/README.md) | EXTI 驱动稳定按键库 | 单击 / 双击 / 长按，长按充能条，事件标志位，运行期可调阈值 |
 | [**ENCODER**](ENCODER/README.md) | 旋转编码器驱动库（TIM 硬件编码器模式） | 有符号增量累加（无中断无竞态）、方向/活动/范围 API、事件标志位、型号预设 |
+| [**INA226**](INA226/README.md) | 电流/电压/功率监测（I2C） | 校准、连续/触发转换、告警系统、ALERT 引脚绑定、型号预设 |
+| [**W25QFLASH**](W25QFLASH/README.md) | W25Q 系列 SPI Flash（W25Q16~W25Q512） | JEDEC ID 自动识别型号、自动地址宽度、读/写/擦除、掉电唤醒 |
 
 更多模块持续添加中。More modules coming.
 
