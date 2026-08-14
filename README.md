@@ -49,6 +49,43 @@ LoveFinderLibForSTM32_HAL/
 
 > 换平台/换引脚只需改这几个宏 + 保证 CubeMX 生成的宏名一致。屏幕电源使能 (EN) 由工程初始化阶段单独控制, 不属库职责。
 
+## 新手三步上手
+
+> 第一次用本库? 按这三步走, 10 分钟点亮屏幕。
+
+**Step 1 — 接线与 CubeMX 配置** (SmartOneT1 已配好, 跳过)
+
+| 屏引脚 | 接 STM32 | CubeMX 配置 |
+|--------|----------|-------------|
+| SCK    | PB3 (SPI1_SCK) | SPI1: Master, 8bit, MSB, Prescaler≤8 (≤10.5MHz) |
+| MOSI   | PB5 (SPI1_MOSI) | 同上 |
+| CS     | PB4 | GPIO Output, 初始 High |
+| DC     | PB8 | GPIO Output |
+| RES    | PB9 | GPIO Output |
+| EN     | PA15 | GPIO Output, 初始化时拉 High (屏幕供电) |
+
+> 换板子? 改 `st7735.hpp` 顶部的 `ST7735_SPI_PORT` / `ST7735_*_Pin` 宏即可, 库内无运行时绑定。
+
+**Step 2 — 工程集成** (Keil 为例)
+1. 把 `ST7735/` 下 4 个 `.cpp` 加入工程: `st7735.cpp` `fonts.c` `fonts_subset.cpp` `icons.c`
+2. Include 路径加 `ST7735/`
+3. 在 `main()` 外设初始化后调用 `ST7735_Init()`
+
+**Step 3 — 第一个程序**
+```cpp
+#include "st7735.hpp"
+
+ST7735_Init();                              // 初始化屏幕
+ST7735_FillScreen_DMA(ST7735_BLACK);        // 清屏 (DMA 版)
+ST7735_WriteString(10, 10, "HELLO", Font_7x10, ST7735_WHITE, ST7735_BLACK);
+ST7735_DrawCircle(80, 40, 30, ST7735_YELLOW);      // 空心圆
+ST7735_FillCircle(120, 40, 15, ST7735_GREEN);      // 实心圆
+ST7735_WriteStringUTF8(20, 60, "\xE4\xBD\xA0\xE5\xA5\xBD",
+                       Font_Subset_ZH_16x16, ST7735_YELLOW, ST7735_BLACK); // "你好"
+```
+
+遇到问题? 见 [故障排除](#故障排除) 与 [新手常见问题](#新手常见问题)。
+
 ## 快速开始
 
 ### 1. 初始化
@@ -105,6 +142,62 @@ ST7735_DrawImage_DMA(0, 0, 160, 80, img);    // DMA 图像 (RGB565)
 ```
 
 > DMA 版内部为**阻塞式等待完成** (`dma_transfer_complete` 标志 + `HAL_SPI_TxCpltCallback`), 无需额外同步。
+
+## 如何启用 DMA (完整指南)
+
+### 前提: CubeMX 配置 SPI TX DMA (一次性)
+
+SmartOneT1 工程**已配置好**, 可直接调用, 跳过本节。
+
+新平台需 3 步 (CubeMX 图形化勾选即可):
+
+1. **SPI1 TX DMA**: DMA Settings 添加 `SPI1_TX`, 推荐 `DMA2_Stream3 / Channel3 / MEMORY_TO_PERIPH`
+2. **DMA 中断**: 使能对应 DMA Stream 中断 (库内忙等完成标志, 依赖中断置位)
+3. **校验**: 生成后 `spi.c` 应有 `__HAL_LINKDMA(hspi1, hdmatx, hdma_spi1_tx);`
+
+> ⚠️ **硬前提**: 若 DMA 未 LINKDMA, `HAL_SPI_Transmit_DMA` 返回错误, 库内 `while(!dma_transfer_complete)` 将**永久忙等 (死锁)**。调试时若卡死在 DMA 函数, 先查这一步。
+
+### 启用方式: 调用 `_DMA` 后缀函数
+
+库只有 3 个 DMA 入口 (大块传输才有 DMA 价值):
+
+| 函数 | 用途 | 普通版对比 |
+|------|------|-----------|
+| `ST7735_FillScreen_DMA(color)` | 全屏填充/清屏 | `ST7735_FillScreen` |
+| `ST7735_FillRectangle_DMA(x,y,w,h,color)` | 区域填充 | `ST7735_FillRectangle` |
+| `ST7735_DrawImage_DMA(x,y,w,h,data)` | RGB565 图像 | `ST7735_DrawImage` |
+
+其余绘制 (字符/点/线/圆/多边形) **保持轮询** — 小传输下 DMA 启动开销反而更大。
+
+### 何时用 DMA, 何时用轮询
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| 页面切换全屏清屏 (≥100px 级) | `FillScreen_DMA` | 大块传输, DMA 释放 CPU |
+| 图像显示 | `DrawImage_DMA` | 同上 |
+| 动画局部擦除/绘制 (≤几百 px) | 轮询版 | DMA 启动开销 > 传输收益 |
+| 文本/小图形 | 轮询版 | 逐像素小传输 |
+
+### 库内部机制 (无需干预)
+
+```cpp
+static void ST7735_WriteData_DMA(uint8_t *buff, size_t buff_size)
+{
+    dma_transfer_complete = 0;
+    HAL_SPI_Transmit_DMA(&ST7735_SPI_PORT, buff, buff_size);
+    while (!dma_transfer_complete);   // 忙等, 函数返回时传输必已完成
+}
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)  // 库内定义
+{
+    if (hspi->Instance == SPI1) dma_transfer_complete = 1;
+}
+```
+
+### 常见坑
+
+1. **DMA 未 LINKDMA → 死锁** (见前提, 最重要)
+2. **`HAL_SPI_TxCpltCallback` 重名冲突**: 库定义了该回调, 若你的其他模块 (如 SPI2 Flash) 也定义了同名回调, 链接报重复定义 → 合并到一个回调里按 `hspi->Instance` 分发
+3. **DMA 缓冲区生命周期**: `DrawImage_DMA` 的 `data` 指针在函数返回前必须有效 (库是阻塞式, 返回即传输完, 一般无此问题)
 
 ## 字符级编译
 
@@ -165,6 +258,48 @@ print(', '.join(f'0x{x:04X}' for x in rows))
 3. 屏幕尺寸/偏移: `st7735.hpp` 中 `WIDTH`/`HEIGHT`/`XSTART`/`YSTART`/`ROTATION`
 4. 如需 DMA: CubeMX 开启 SPI TX DMA, 使用 `_DMA` 后缀函数
 5. 将 ST7735/ 下 `.cpp` 加入工程编译 (Keil: Add Existing Files)
+
+## 新手常见问题
+
+**Q1: 屏幕全黑 / 不亮?**
+- 查 EN (PA15) 是否拉高 — 屏幕供电, 最常见原因
+- 查 SPI 是否已 `HAL_SPI_Init` (CubeMX 生成代码不能删)
+- 查 `ST7735_Init()` 是否在 GPIO/SPI 初始化**之后**调用
+
+**Q2: 死机卡死 (进 HardFault)?**
+- 是否用了 DMA 函数但 CubeMX 没配 SPI TX DMA → `while(!dma_transfer_complete)` 死锁, 见 [如何启用 DMA](#如何启用-dma-完整指南) 前提
+- 数组越界: `DrawImage` 的 `data` 长度必须 ≥ `w*h*2` 字节
+
+**Q3: 中文显示乱码 / 空白?**
+- 乱码 → 字模数据错误, 按 [生成新字模](#生成新字模-python--pil) 重新生成 (bit15=最左列)
+- 空白 → 该字符未编译进子集, 检查 `FONT_SUBSET_ZH_CHARS` / `FONT_SUBSET_7X10_CHARS`
+- 文本乱码 → 用 `ST7735_WriteStringUTF8` (UTF-8 输入), 不要用 GBK 编码源文件
+
+**Q4: 显示错位 / 旋转方向不对?**
+- 调 `st7735.hpp` 的 `WIDTH/HEIGHT/XSTART/YSTART/ROTATION` (本工程 160x80 已配好)
+- 确认 SPI 时序: CPOL=Low, CPHA=1Edge (Mode 0)
+
+**Q5: 想加一个汉字怎么做?**
+1. Python+PIL 生成字模 (见 [生成新字模](#生成新字模-python--pil))
+2. `fonts_subset.cpp` 加 `static const uint16_t` 数组 + 查表 case
+3. `fonts_config.hpp` 的 `FONT_SUBSET_ZH_CHARS` 加码点
+
+## 故障排除
+
+### 显示异常
+1. 检查 SPI 连线 (SCK/MOSI/CS/DC/RESET/EN) 与 CubeMX 引脚一致
+2. 验证时序: CPOL/CPHA, 时钟频率 ≤ 规格
+3. 复位时序: RES 低电平 ≥5ms, 上升沿后等待 SLPOUT 完成
+
+### 文字乱码
+1. 字模数据格式: 每行一个 uint16_t, bit15=最左列 (与渲染引擎 `(data<<j)&0x8000` 匹配)
+2. 中文用 UTF-8 输入 + `ST7735_WriteStringUTF8`
+3. 前景/背景色参数顺序正确
+
+### 图形错位
+1. 检查坐标系: 原点左上, x 向右, y 向下
+2. 验证 `ROTATION` (MADCTL) 与实际屏幕方向一致
+3. 确认 `SetAddressWindow` 的 CASET/RASET 范围 (160x80 已配)
 
 ## 验收记录
 
